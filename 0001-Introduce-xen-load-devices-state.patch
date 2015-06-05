@@ -1,0 +1,154 @@
+From ed5a0d13e7bd1efb2171aae87b94a50743f4c8a9 Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Thu, 11 Sep 2014 15:03:31 +0800
+Subject: [PATCH 01/18] Introduce "xen-load-devices-state"
+
+Introduce a "xen-load-devices-state" QAPI command that can be used to load
+the state of all devices, but not the RAM or the block devices of the
+VM.
+
+We only have hmp commands savevm/loadvm, and qmp commands
+xen-save-devices-state.
+
+We use this new command for COLO:
+1. suspend both primay vm and secondary vm
+2. sync the state
+3. resume both primary vm and secondary vm
+
+In such case, we need to update all devices's state in any time.
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+---
+ qapi-schema.json |   18 ++++++++++++++++++
+ qmp-commands.hx  |   27 +++++++++++++++++++++++++++
+ savevm.c         |   36 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 81 insertions(+), 0 deletions(-)
+
+diff --git a/qapi-schema.json b/qapi-schema.json
+index 9ffdcf8..7a228d7 100644
+--- a/qapi-schema.json
++++ b/qapi-schema.json
+@@ -3515,3 +3515,21 @@
+ # Since: 2.1
+ ##
+ { 'command': 'rtc-reset-reinjection' }
++
++##
++# @xen-load-devices-state:
++#
++# Load the state of all devices from file. The RAM and the block devices
++# of the VM are not loaded by this command.
++#
++# @filename: the file to load the state of the devices from as binary
++# data. See xen-save-devices-state.txt for a description of the binary
++# format.
++#
++# Returns: Nothing on success
++#          If @filename cannot be opened, OpenFileFailed
++#          If an I/O error occurs while reading the file, IOError
++#
++# Since: 2.3
++##
++{ 'command': 'xen-load-devices-state', 'data': {'filename': 'str'} }
+diff --git a/qmp-commands.hx b/qmp-commands.hx
+index 718dd92..357eaab 100644
+--- a/qmp-commands.hx
++++ b/qmp-commands.hx
+@@ -585,6 +585,33 @@ Example:
+ EQMP
+ 
+     {
++        .name       = "xen-load-devices-state",
++        .args_type  = "filename:F",
++        .mhandler.cmd_new = qmp_marshal_input_xen_load_devices_state,
++    },
++
++SQMP
++xen-load-devices-state
++-------
++
++Load the state of all devices from file. The RAM and the block devices
++of the VM are not loaded by this command.
++
++Arguments:
++
++- "filename": the file to load the state of the devices from as binary
++data. See xen-save-devices-state.txt for a description of the binary
++format.
++
++Example:
++
++-> { "execute": "xen-load-devices-state",
++     "arguments": { "filename": "/tmp/resume" } }
++<- { "return": {} }
++
++EQMP
++
++    {
+         .name       = "xen-set-global-dirty-log",
+         .args_type  = "enable:b",
+         .mhandler.cmd_new = qmp_marshal_input_xen_set_global_dirty_log,
+diff --git a/savevm.c b/savevm.c
+index 08ec678..137ff20 100644
+--- a/savevm.c
++++ b/savevm.c
+@@ -42,6 +42,7 @@
+ #include "qemu/iov.h"
+ #include "block/snapshot.h"
+ #include "block/qapi.h"
++#include "hw/xen/xen.h"
+ 
+ 
+ #ifndef ETH_P_RARP
+@@ -938,6 +939,14 @@ int qemu_loadvm_state(QEMUFile *f)
+                 goto out;
+             }
+ 
++            /* Validate if it is a device's state */
++            if (xen_enabled() && se->is_ram) {
++                fprintf(stderr, "loadvm: %s RAM loading not allowed on Xen\n",
++                        idstr);
++                ret = -EINVAL;
++                goto out;
++            }
++
+             /* Add entry */
+             le = g_malloc0(sizeof(*le));
+ 
+@@ -1163,6 +1172,33 @@ void qmp_xen_save_devices_state(const char *filename, Error **errp)
+     }
+ }
+ 
++void qmp_xen_load_devices_state(const char *filename, Error **errp)
++{
++    QEMUFile *f;
++    int saved_vm_running;
++    int ret;
++
++    saved_vm_running = runstate_is_running();
++    vm_stop(RUN_STATE_RESTORE_VM);
++
++    f = qemu_fopen(filename, "rb");
++    if (!f) {
++        error_setg_file_open(errp, errno, filename);
++        goto out;
++    }
++
++    ret = qemu_loadvm_state(f);
++    qemu_fclose(f);
++    if (ret < 0) {
++        error_set(errp, QERR_IO_ERROR);
++    }
++
++out:
++    if (saved_vm_running) {
++        vm_start();
++    }
++}
++
+ int load_vmstate(const char *name)
+ {
+     BlockDriverState *bs, *bs_vm_state;
+-- 
+1.7.1
+

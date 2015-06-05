@@ -1,0 +1,99 @@
+From ade7f6ea635e2fdbdcff8aba195cdb2e12d55658 Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Tue, 3 Mar 2015 11:04:44 +0800
+Subject: [PATCH 12/18] Backup: clear all bitmap when doing block checkpoint
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+Signed-off-by: zhanghailiang <zhang.zhanghailiang@huawei.com>
+Signed-off-by: Gonglei <arei.gonglei@huawei.com>
+---
+ block/backup.c            |   12 ++++++++++++
+ include/block/block_int.h |    1 +
+ include/qemu/hbitmap.h    |    8 ++++++++
+ util/hbitmap.c            |   19 +++++++++++++++++++
+ 4 files changed, 40 insertions(+), 0 deletions(-)
+
+diff --git a/block/backup.c b/block/backup.c
+index 792e655..176297c 100644
+--- a/block/backup.c
++++ b/block/backup.c
+@@ -407,3 +407,15 @@ void backup_start(BlockDriverState *bs, BlockDriverState *target,
+     job->common.co = qemu_coroutine_create(backup_run);
+     qemu_coroutine_enter(job->common.co, job);
+ }
++
++void backup_do_checkpoint(BlockJob *job, Error **errp)
++{
++    BackupBlockJob *backup_job = container_of(job, BackupBlockJob, common);
++
++    if (job->driver != &backup_job_driver) {
++        error_setg(errp, "It is not backup job");
++        return;
++    }
++
++    hbitmap_reset_all(backup_job->bitmap);
++}
+diff --git a/include/block/block_int.h b/include/block/block_int.h
+index 600b6de..4625db7 100644
+--- a/include/block/block_int.h
++++ b/include/block/block_int.h
+@@ -606,6 +606,7 @@ void backup_start(BlockDriverState *bs, BlockDriverState *target,
+                   BlockdevOnError on_target_error,
+                   BlockCompletionFunc *cb, void *opaque,
+                   Error **errp);
++void backup_do_checkpoint(BlockJob *job, Error **errp);
+ 
+ void blk_dev_change_media_cb(BlockBackend *blk, bool load);
+ bool blk_dev_has_removable_media(BlockBackend *blk);
+diff --git a/include/qemu/hbitmap.h b/include/qemu/hbitmap.h
+index 550d7ce..95a55e4 100644
+--- a/include/qemu/hbitmap.h
++++ b/include/qemu/hbitmap.h
+@@ -109,6 +109,14 @@ void hbitmap_set(HBitmap *hb, uint64_t start, uint64_t count);
+ void hbitmap_reset(HBitmap *hb, uint64_t start, uint64_t count);
+ 
+ /**
++ * hbitmap_reset_all:
++ * @hb: HBitmap to operate on.
++ *
++ * Reset all bits in an HBitmap.
++ */
++void hbitmap_reset_all(HBitmap *hb);
++
++/**
+  * hbitmap_get:
+  * @hb: HBitmap to operate on.
+  * @item: Bit to query (0-based).
+diff --git a/util/hbitmap.c b/util/hbitmap.c
+index b3060e6..3047260 100644
+--- a/util/hbitmap.c
++++ b/util/hbitmap.c
+@@ -353,6 +353,25 @@ void hbitmap_reset(HBitmap *hb, uint64_t start, uint64_t count)
+     hb_reset_between(hb, HBITMAP_LEVELS - 1, start, last);
+ }
+ 
++void hbitmap_reset_all(HBitmap *hb)
++{
++#if 0
++    hbitmap_reset(hb, 0, hb->size << hb->granularity);
++#else
++    uint64_t size = hb->size;
++    unsigned int i;
++
++    /* Same as hbitmap_alloc() except memset() */
++    for (i = HBITMAP_LEVELS; i-- > 0; ) {
++        size = MAX((size + BITS_PER_LONG - 1) >> BITS_PER_LEVEL, 1);
++        memset(hb->levels[i], 0, size * sizeof(unsigned long));
++    }
++
++    assert(size == 1);
++    hb->levels[0][0] |= 1UL << (BITS_PER_LONG - 1);
++#endif
++}
++
+ bool hbitmap_get(const HBitmap *hb, uint64_t item)
+ {
+     /* Compute position and bit in the last layer.  */
+-- 
+1.7.1
+

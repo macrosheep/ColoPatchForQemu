@@ -1,0 +1,104 @@
+From bfca90a20019ee066472a4a06669b4898db3e92b Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Fri, 16 Jan 2015 18:45:38 +0800
+Subject: [PATCH 17/18] Add a new qmp command to do block checkpoint
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+---
+ migration-colo.c |   23 +++++++++++++++++++++++
+ qapi/block.json  |   11 +++++++++++
+ qmp-commands.hx  |   21 +++++++++++++++++++++
+ 3 files changed, 55 insertions(+), 0 deletions(-)
+
+diff --git a/migration-colo.c b/migration-colo.c
+index e689f3d..09c6af8 100644
+--- a/migration-colo.c
++++ b/migration-colo.c
+@@ -47,6 +47,24 @@ fail:
+     }
+ }
+ 
++static void blk_do_checkpoint(Error **errp)
++{
++    BlockBackend *blk;
++    Error *local_err = NULL;
++
++    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
++        if (blk_is_read_only(blk) || !blk_is_inserted(blk)) {
++            continue;
++        }
++
++        bdrv_do_checkpoint(blk_bs(blk), &local_err);
++        if (local_err) {
++            error_propagate(errp, local_err);
++            return;
++        }
++    }
++}
++
+ static void blk_stop_replication(Error **errp)
+ {
+     BlockBackend *blk;
+@@ -148,3 +166,8 @@ void qmp_xen_set_block_replication(bool enable, bool primary, bool has_addr,
+     else
+         block_stop_replication(primary, errp);
+ }
++
++void qmp_xen_do_block_checkpoint(Error **errp)
++{
++    blk_do_checkpoint(errp);
++}
+diff --git a/qapi/block.json b/qapi/block.json
+index 6ff52b8..a0206a3 100644
+--- a/qapi/block.json
++++ b/qapi/block.json
+@@ -212,3 +212,14 @@
+ ##
+ { 'command': 'xen-set-block-replication',
+   'data': { 'enable': 'bool', 'primary': 'bool', '*addr': 'str' } }
++
++##
++# @xen-do-block-checkpoint
++#
++# Do block checkpoint
++#
++# Returns: nothing
++#
++# Since: 2.3
++##
++{ 'command': 'xen-do-block-checkpoint' }
+diff --git a/qmp-commands.hx b/qmp-commands.hx
+index 45645bf..0f02279 100644
+--- a/qmp-commands.hx
++++ b/qmp-commands.hx
+@@ -661,6 +661,27 @@ Example:
+ EQMP
+ 
+     {
++        .name       = "xen-do-block-checkpoint",
++        .args_type  = "",
++        .mhandler.cmd_new = qmp_marshal_input_xen_do_block_checkpoint,
++    },
++
++SQMP
++xen-do-checkpoint
++-------
++
++Do block checkpoint
++
++Arguments: None
++
++Example:
++
++-> { "execute": "xen-do-block-checkpoint" }
++<- { "return": {} }
++
++EQMP
++
++    {
+         .name       = "migrate",
+         .args_type  = "detach:-d,blk:-b,inc:-i,uri:s",
+         .mhandler.cmd_new = qmp_marshal_input_migrate,
+-- 
+1.7.1
+

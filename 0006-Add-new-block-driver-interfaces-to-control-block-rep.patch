@@ -1,0 +1,129 @@
+From 5660bb6d319953b982c726177e14a9f161b00eb8 Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Wed, 25 Feb 2015 13:20:25 +0800
+Subject: [PATCH 06/18] Add new block driver interfaces to control block replication
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+Signed-off-by: zhanghailiang <zhang.zhanghailiang@huawei.com>
+Signed-off-by: Gonglei <arei.gonglei@huawei.com>
+---
+ block.c                   |   39 +++++++++++++++++++++++++++++++++++++++
+ include/block/block.h     |    5 +++++
+ include/block/block_int.h |   12 ++++++++++++
+ qapi/block.json           |   16 ++++++++++++++++
+ 4 files changed, 72 insertions(+), 0 deletions(-)
+
+diff --git a/block.c b/block.c
+index 8717597..60f49d1 100644
+--- a/block.c
++++ b/block.c
+@@ -6050,3 +6050,42 @@ BlockAcctStats *bdrv_get_stats(BlockDriverState *bs)
+ {
+     return &bs->stats;
+ }
++
++void bdrv_start_replication(BlockDriverState *bs, COLOMode mode, Error **errp)
++{
++    BlockDriver *drv = bs->drv;
++
++    if (drv && drv->bdrv_start_replication) {
++        drv->bdrv_start_replication(bs, mode, errp);
++    } else if (bs->file) {
++        bdrv_start_replication(bs->file, mode, errp);
++    } else {
++        error_set(errp, QERR_UNSUPPORTED);
++    }
++}
++
++void bdrv_do_checkpoint(BlockDriverState *bs, Error **errp)
++{
++    BlockDriver *drv = bs->drv;
++
++    if (drv && drv->bdrv_do_checkpoint) {
++        drv->bdrv_do_checkpoint(bs, errp);
++    } else if (bs->file) {
++        bdrv_do_checkpoint(bs->file, errp);
++    } else {
++        error_set(errp, QERR_UNSUPPORTED);
++    }
++}
++
++void bdrv_stop_replication(BlockDriverState *bs, Error **errp)
++{
++    BlockDriver *drv = bs->drv;
++
++    if (drv && drv->bdrv_stop_replication) {
++        drv->bdrv_stop_replication(bs, errp);
++    } else if (bs->file) {
++        bdrv_stop_replication(bs->file, errp);
++    } else {
++        error_set(errp, QERR_UNSUPPORTED);
++    }
++}
+diff --git a/include/block/block.h b/include/block/block.h
+index 5450610..cd24b40 100644
+--- a/include/block/block.h
++++ b/include/block/block.h
+@@ -545,4 +545,9 @@ void bdrv_flush_io_queue(BlockDriverState *bs);
+ 
+ BlockAcctStats *bdrv_get_stats(BlockDriverState *bs);
+ 
++/* Checkpoint control, called in migration/checkpoint thread */
++void bdrv_start_replication(BlockDriverState *bs, COLOMode mode, Error **errp);
++void bdrv_do_checkpoint(BlockDriverState *bs, Error **errp);
++void bdrv_stop_replication(BlockDriverState *bs, Error **errp);
++
+ #endif
+diff --git a/include/block/block_int.h b/include/block/block_int.h
+index 2ae82c5..6cff42d 100644
+--- a/include/block/block_int.h
++++ b/include/block/block_int.h
+@@ -271,6 +271,18 @@ struct BlockDriver {
+     void (*bdrv_io_unplug)(BlockDriverState *bs);
+     void (*bdrv_flush_io_queue)(BlockDriverState *bs);
+ 
++
++    /* Checkpoint control, called in migration/checkpoint thread */
++    void (*bdrv_start_replication)(BlockDriverState *bs, COLOMode mode,
++                                   Error **errp);
++    /* Drop Disk buffer when doing checkpoint. */
++    void (*bdrv_do_checkpoint)(BlockDriverState *bs, Error **errp);
++    /*
++     * After failover, we should flush Disk buffer into secondary disk
++     * and stop block replication.
++     */
++    void (*bdrv_stop_replication)(BlockDriverState *bs, Error **errp);
++
+     QLIST_ENTRY(BlockDriver) list;
+ };
+ 
+diff --git a/qapi/block.json b/qapi/block.json
+index e313465..e640566 100644
+--- a/qapi/block.json
++++ b/qapi/block.json
+@@ -40,6 +40,22 @@
+   'data': ['auto', 'none', 'lba', 'large', 'rechs']}
+ 
+ ##
++# @COLOMode
++#
++# An enumeration of COLO mode.
++#
++# @unprotected: COLO is not started or after failover
++#
++# @primary: Primary mode, the vm's state will be sent to secondary QEMU.
++#
++# @secondary: Secondary mode, receive the vm's state from primary QEMU.
++#
++# Since: 2.4
++##
++{ 'enum' : 'COLOMode',
++  'data' : ['unprotected', 'primary', 'secondary']}
++
++##
+ # @BlockdevSnapshotInternal
+ #
+ # @device: the name of the device to generate the snapshot from
+-- 
+1.7.1
+

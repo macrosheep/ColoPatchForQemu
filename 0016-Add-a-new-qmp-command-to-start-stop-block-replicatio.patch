@@ -1,0 +1,247 @@
+From 6b25c272310d155678434b0e28bc652976173fa9 Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Tue, 24 Mar 2015 13:32:32 +0800
+Subject: [PATCH 16/18] Add a new qmp command to start/stop block replication
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+---
+ Makefile.objs    |    1 +
+ migration-colo.c |  150 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ qapi/block.json  |   18 +++++++
+ qmp-commands.hx  |   25 +++++++++
+ 4 files changed, 194 insertions(+), 0 deletions(-)
+ create mode 100644 migration-colo.c
+
+diff --git a/Makefile.objs b/Makefile.objs
+index 18fd35c..cb64eb2 100644
+--- a/Makefile.objs
++++ b/Makefile.objs
+@@ -55,6 +55,7 @@ common-obj-$(CONFIG_RDMA) += migration-rdma.o
+ common-obj-y += qemu-char.o #aio.o
+ common-obj-y += block-migration.o
+ common-obj-y += page_cache.o xbzrle.o
++common-obj-y += migration-colo.o
+ 
+ common-obj-$(CONFIG_POSIX) += migration-exec.o migration-unix.o migration-fd.o
+ 
+diff --git a/migration-colo.c b/migration-colo.c
+new file mode 100644
+index 0000000..e689f3d
+--- /dev/null
++++ b/migration-colo.c
+@@ -0,0 +1,150 @@
++/*
++ * COLO Implementation
++ *
++ * Copyright Fujitsu, Corp. 2015
++ *
++ * Authors:
++ *     Wen Congyang <wency@cn.fujitsu.com>
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ *
++ */
++
++#include "qemu-common.h"
++#include "qmp-commands.h"
++#include "monitor/monitor.h"
++#include "sysemu/block-backend.h"
++#include "qemu/sockets.h"
++#include "block/nbd.h"
++#include "qemu/main-loop.h"
++
++static int server_fd = -1;
++
++static void blk_start_replication(bool primary, Error **errp)
++{
++    int mode = primary ? COLO_MODE_PRIMARY: COLO_MODE_SECONDARY;
++    BlockBackend *blk, *temp;
++    Error *local_err = NULL;
++
++    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
++        if (blk_is_read_only(blk) || !blk_is_inserted(blk)) {
++            continue;
++        }
++
++        bdrv_start_replication(blk_bs(blk), mode, &local_err);
++        if (local_err) {
++            error_propagate(errp, local_err);
++            goto fail;
++        }
++    }
++
++    return;
++
++fail:
++    for (temp = blk_next(NULL); temp != blk; temp = blk_next(temp)) {
++        bdrv_stop_replication(blk_bs(temp), NULL);
++    }
++}
++
++static void blk_stop_replication(Error **errp)
++{
++    BlockBackend *blk;
++    Error *local_err = NULL;
++
++    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
++        if (blk_is_read_only(blk) || !blk_is_inserted(blk)) {
++            continue;
++        }
++
++        bdrv_stop_replication(blk_bs(blk), &local_err);
++        if (local_err) {
++            error_propagate(errp, local_err);
++            return;
++        }
++    }
++}
++
++static void block_replication_accept(void *opaque)
++{
++    struct sockaddr_in addr;
++    socklen_t addr_len = sizeof(addr);
++
++    int fd = accept(server_fd, (struct sockaddr *)&addr, &addr_len);
++    if (fd >= 0 && !nbd_client_new(NULL, fd, nbd_client_put)) {
++        shutdown(fd, 2);
++        close(fd);
++    }
++}
++
++static void block_start_replication(bool primary, bool has_addr,
++                                    const char *addr, Error **errp)
++{
++    Error *local_err = NULL;
++
++    if (!primary && server_fd != -1) {
++        error_setg(errp, "Block replication is already running");
++        return;
++    }
++
++    if (has_addr) {
++        server_fd = inet_listen(addr, NULL, 256, SOCK_STREAM, 0, errp);
++        if (server_fd == -1)
++            return;
++
++        qemu_set_fd_handler2(server_fd, NULL, block_replication_accept,
++                             NULL, NULL);
++    }
++
++    blk_start_replication(primary, &local_err);
++    if (local_err) {
++        error_propagate(errp, local_err);
++        if (has_addr) {
++            qemu_set_fd_handler2(server_fd, NULL, NULL, NULL, NULL);
++            close(server_fd);
++            server_fd = -1;
++            return;
++        }
++    }
++}
++
++static void block_stop_replication(bool primary, Error **errp)
++{
++    Error *local_err = NULL;
++
++    if (!primary && server_fd == -1) {
++        error_setg(errp, "Block replication is not running");
++        return;
++    }
++
++    if (server_fd != -1) {
++        qemu_set_fd_handler2(server_fd, NULL, NULL, NULL, NULL);
++        close(server_fd);
++        server_fd = -1;
++    }
++
++    blk_stop_replication(&local_err);
++    if (local_err) {
++        error_propagate(errp, local_err);
++        return;
++    }
++}
++
++void qmp_xen_set_block_replication(bool enable, bool primary, bool has_addr,
++                                   const char *addr, Error **errp)
++{
++    if (enable && !primary && !has_addr) {
++        error_set(errp, QERR_MISSING_PARAMETER, "addr");
++        return;
++    }
++
++    if (has_addr && (!enable || primary)) {
++        error_set(errp, QERR_INVALID_PARAMETER, "addr");
++        return;
++    }
++
++    if (enable)
++        block_start_replication(primary, has_addr, addr, errp);
++    else
++        block_stop_replication(primary, errp);
++}
+diff --git a/qapi/block.json b/qapi/block.json
+index e640566..6ff52b8 100644
+--- a/qapi/block.json
++++ b/qapi/block.json
+@@ -194,3 +194,21 @@
+ ##
+ { 'event': 'DEVICE_TRAY_MOVED',
+   'data': { 'device': 'str', 'tray-open': 'bool' } }
++
++##
++# @xen-set-block-replication
++#
++# Enable or disable block replication
++#
++# @enable: true to enable, false to disable.
++#
++# @primary: true for primary or false for secondary
++#
++# @uri: the Uniform Resource Identifier of the secondary host
++#
++# Returns: nothing
++#
++# Since: 2.3
++##
++{ 'command': 'xen-set-block-replication',
++  'data': { 'enable': 'bool', 'primary': 'bool', '*addr': 'str' } }
+diff --git a/qmp-commands.hx b/qmp-commands.hx
+index 357eaab..45645bf 100644
+--- a/qmp-commands.hx
++++ b/qmp-commands.hx
+@@ -636,6 +636,31 @@ Example:
+ EQMP
+ 
+     {
++        .name       = "xen-set-block-replication",
++        .args_type  = "enable:b,primary:b,addr:s?",
++        .mhandler.cmd_new = qmp_marshal_input_xen_set_block_replication,
++    },
++
++SQMP
++xen-set-block-replication
++-------
++
++Enable or disable block replication.
++
++Arguments:
++- "enable": Enable it or disable it.
++- "primary": true for primary or false for secondary
++- "uri": Destination URI (json-string)
++
++Example:
++
++-> { "execute": "xen-set-block-replicate",
++     "arguments": {"enable": true, "primary": false, "addr": "0:9999"} }
++<- { "return": {} }
++
++EQMP
++
++    {
+         .name       = "migrate",
+         .args_type  = "detach:-d,blk:-b,inc:-i,uri:s",
+         .mhandler.cmd_new = qmp_marshal_input_migrate,
+-- 
+1.7.1
+

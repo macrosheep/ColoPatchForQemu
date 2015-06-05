@@ -1,0 +1,58 @@
+From 535e361a565e62852be8f7606739c2b7395e9a4d Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Mon, 16 Mar 2015 16:56:32 +0800
+Subject: [PATCH 14/18] skip nbd_target when starting block replication
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+Signed-off-by: zhanghailiang <zhang.zhanghailiang@huawei.com>
+Signed-off-by: Gonglei <arei.gonglei@huawei.com>
+---
+ block.c |   18 ++++++++++++++++++
+ 1 files changed, 18 insertions(+), 0 deletions(-)
+
+diff --git a/block.c b/block.c
+index 1bda956..2664f13 100644
+--- a/block.c
++++ b/block.c
+@@ -6220,6 +6220,12 @@ BlockAcctStats *bdrv_get_stats(BlockDriverState *bs)
+ void bdrv_start_replication(BlockDriverState *bs, COLOMode mode, Error **errp)
+ {
+     BlockDriver *drv = bs->drv;
++    Error *local_err = NULL;
++
++    if (bdrv_op_is_blocked(bs, BLOCK_OP_TYPE_BACKING_REFERENCE, &local_err)) {
++        error_free(local_err);
++        return;
++    }
+ 
+     if (drv && drv->bdrv_start_replication) {
+         drv->bdrv_start_replication(bs, mode, errp);
+@@ -6233,6 +6239,12 @@ void bdrv_start_replication(BlockDriverState *bs, COLOMode mode, Error **errp)
+ void bdrv_do_checkpoint(BlockDriverState *bs, Error **errp)
+ {
+     BlockDriver *drv = bs->drv;
++    Error *local_err = NULL;
++
++    if (bdrv_op_is_blocked(bs, BLOCK_OP_TYPE_BACKING_REFERENCE, &local_err)) {
++        error_free(local_err);
++        return;
++    }
+ 
+     if (drv && drv->bdrv_do_checkpoint) {
+         drv->bdrv_do_checkpoint(bs, errp);
+@@ -6246,6 +6258,12 @@ void bdrv_do_checkpoint(BlockDriverState *bs, Error **errp)
+ void bdrv_stop_replication(BlockDriverState *bs, Error **errp)
+ {
+     BlockDriver *drv = bs->drv;
++    Error *local_err = NULL;
++
++    if (bdrv_op_is_blocked(bs, BLOCK_OP_TYPE_BACKING_REFERENCE, &local_err)) {
++        error_free(local_err);
++        return;
++    }
+ 
+     if (drv && drv->bdrv_stop_replication) {
+         drv->bdrv_stop_replication(bs, errp);
+-- 
+1.7.1
+

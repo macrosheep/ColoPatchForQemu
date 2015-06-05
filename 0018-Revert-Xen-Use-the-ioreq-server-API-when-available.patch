@@ -1,0 +1,606 @@
+From da570afda28ae6f30d32abe40a917ce631ca449a Mon Sep 17 00:00:00 2001
+From: Yang Hongyang <yanghy@cn.fujitsu.com>
+Date: Sat, 6 Jun 2015 18:44:46 +0800
+Subject: [PATCH 18/18] Revert "Xen: Use the ioreq-server API when available"
+
+This reverts commit 7665d6ba98e20fb05c420de947c1750fd47e5c07.
+---
+ configure                   |   29 ------
+ include/hw/xen/xen_common.h |  223 -------------------------------------------
+ trace-events                |    9 --
+ xen-hvm.c                   |  160 ++++--------------------------
+ 4 files changed, 22 insertions(+), 399 deletions(-)
+
+diff --git a/configure b/configure
+index b1f8c2a..47048f0 100755
+--- a/configure
++++ b/configure
+@@ -1877,32 +1877,6 @@ int main(void) {
+   xc_gnttab_open(NULL, 0);
+   xc_domain_add_to_physmap(0, 0, XENMAPSPACE_gmfn, 0, 0);
+   xc_hvm_inject_msi(xc, 0, 0xf0000000, 0x00000000);
+-  xc_hvm_create_ioreq_server(xc, 0, 0, NULL);
+-  return 0;
+-}
+-EOF
+-      compile_prog "" "$xen_libs"
+-    then
+-    xen_ctrl_version=450
+-    xen=yes
+-
+-  elif
+-      cat > $TMPC <<EOF &&
+-#include <xenctrl.h>
+-#include <xenstore.h>
+-#include <stdint.h>
+-#include <xen/hvm/hvm_info_table.h>
+-#if !defined(HVM_MAX_VCPUS)
+-# error HVM_MAX_VCPUS not defined
+-#endif
+-int main(void) {
+-  xc_interface *xc;
+-  xs_daemon_open();
+-  xc = xc_interface_open(0, 0, 0);
+-  xc_hvm_set_mem_type(0, 0, HVMMEM_ram_ro, 0, 0);
+-  xc_gnttab_open(NULL, 0);
+-  xc_domain_add_to_physmap(0, 0, XENMAPSPACE_gmfn, 0, 0);
+-  xc_hvm_inject_msi(xc, 0, 0xf0000000, 0x00000000);
+   return 0;
+ }
+ EOF
+@@ -4309,9 +4283,6 @@ if test -n "$sparc_cpu"; then
+     echo "Target Sparc Arch $sparc_cpu"
+ fi
+ echo "xen support       $xen"
+-if test "$xen" = "yes" ; then
+-  echo "xen ctrl version  $xen_ctrl_version"
+-fi
+ echo "brlapi support    $brlapi"
+ echo "bluez  support    $bluez"
+ echo "Documentation     $docs"
+diff --git a/include/hw/xen/xen_common.h b/include/hw/xen/xen_common.h
+index 38f29fb..e7c5799 100644
+--- a/include/hw/xen/xen_common.h
++++ b/include/hw/xen/xen_common.h
+@@ -16,9 +16,7 @@
+ 
+ #include "hw/hw.h"
+ #include "hw/xen/xen.h"
+-#include "hw/pci/pci.h"
+ #include "qemu/queue.h"
+-#include "trace.h"
+ 
+ /*
+  * We don't support Xen prior to 3.3.0.
+@@ -186,225 +184,4 @@ static inline int xen_get_vmport_regs_pfn(XenXC xc, domid_t dom,
+ }
+ #endif
+ 
+-/* Xen before 4.5 */
+-#if CONFIG_XEN_CTRL_INTERFACE_VERSION < 450
+-
+-#ifndef HVM_PARAM_BUFIOREQ_EVTCHN
+-#define HVM_PARAM_BUFIOREQ_EVTCHN 26
+-#endif
+-
+-#define IOREQ_TYPE_PCI_CONFIG 2
+-
+-typedef uint32_t ioservid_t;
+-
+-static inline void xen_map_memory_section(XenXC xc, domid_t dom,
+-                                          ioservid_t ioservid,
+-                                          MemoryRegionSection *section)
+-{
+-}
+-
+-static inline void xen_unmap_memory_section(XenXC xc, domid_t dom,
+-                                            ioservid_t ioservid,
+-                                            MemoryRegionSection *section)
+-{
+-}
+-
+-static inline void xen_map_io_section(XenXC xc, domid_t dom,
+-                                      ioservid_t ioservid,
+-                                      MemoryRegionSection *section)
+-{
+-}
+-
+-static inline void xen_unmap_io_section(XenXC xc, domid_t dom,
+-                                        ioservid_t ioservid,
+-                                        MemoryRegionSection *section)
+-{
+-}
+-
+-static inline void xen_map_pcidev(XenXC xc, domid_t dom,
+-                                  ioservid_t ioservid,
+-                                  PCIDevice *pci_dev)
+-{
+-}
+-
+-static inline void xen_unmap_pcidev(XenXC xc, domid_t dom,
+-                                    ioservid_t ioservid,
+-                                    PCIDevice *pci_dev)
+-{
+-}
+-
+-static inline int xen_create_ioreq_server(XenXC xc, domid_t dom,
+-                                          ioservid_t *ioservid)
+-{
+-    return 0;
+-}
+-
+-static inline void xen_destroy_ioreq_server(XenXC xc, domid_t dom,
+-                                            ioservid_t ioservid)
+-{
+-}
+-
+-static inline int xen_get_ioreq_server_info(XenXC xc, domid_t dom,
+-                                            ioservid_t ioservid,
+-                                            xen_pfn_t *ioreq_pfn,
+-                                            xen_pfn_t *bufioreq_pfn,
+-                                            evtchn_port_t *bufioreq_evtchn)
+-{
+-    unsigned long param;
+-    int rc;
+-
+-    rc = xc_get_hvm_param(xc, dom, HVM_PARAM_IOREQ_PFN, &param);
+-    if (rc < 0) {
+-        fprintf(stderr, "failed to get HVM_PARAM_IOREQ_PFN\n");
+-        return -1;
+-    }
+-
+-    *ioreq_pfn = param;
+-
+-    rc = xc_get_hvm_param(xc, dom, HVM_PARAM_BUFIOREQ_PFN, &param);
+-    if (rc < 0) {
+-        fprintf(stderr, "failed to get HVM_PARAM_BUFIOREQ_PFN\n");
+-        return -1;
+-    }
+-
+-    *bufioreq_pfn = param;
+-
+-    rc = xc_get_hvm_param(xc, dom, HVM_PARAM_BUFIOREQ_EVTCHN,
+-                          &param);
+-    if (rc < 0) {
+-        fprintf(stderr, "failed to get HVM_PARAM_BUFIOREQ_EVTCHN\n");
+-        return -1;
+-    }
+-
+-    *bufioreq_evtchn = param;
+-
+-    return 0;
+-}
+-
+-static inline int xen_set_ioreq_server_state(XenXC xc, domid_t dom,
+-                                             ioservid_t ioservid,
+-                                             bool enable)
+-{
+-    return 0;
+-}
+-
+-/* Xen 4.5 */
+-#else
+-
+-static inline void xen_map_memory_section(XenXC xc, domid_t dom,
+-                                          ioservid_t ioservid,
+-                                          MemoryRegionSection *section)
+-{
+-    hwaddr start_addr = section->offset_within_address_space;
+-    ram_addr_t size = int128_get64(section->size);
+-    hwaddr end_addr = start_addr + size - 1;
+-
+-    trace_xen_map_mmio_range(ioservid, start_addr, end_addr);
+-    xc_hvm_map_io_range_to_ioreq_server(xc, dom, ioservid, 1,
+-                                        start_addr, end_addr);
+-}
+-
+-static inline void xen_unmap_memory_section(XenXC xc, domid_t dom,
+-                                            ioservid_t ioservid,
+-                                            MemoryRegionSection *section)
+-{
+-    hwaddr start_addr = section->offset_within_address_space;
+-    ram_addr_t size = int128_get64(section->size);
+-    hwaddr end_addr = start_addr + size - 1;
+-
+-    trace_xen_unmap_mmio_range(ioservid, start_addr, end_addr);
+-    xc_hvm_unmap_io_range_from_ioreq_server(xc, dom, ioservid, 1,
+-                                            start_addr, end_addr);
+-}
+-
+-static inline void xen_map_io_section(XenXC xc, domid_t dom,
+-                                      ioservid_t ioservid,
+-                                      MemoryRegionSection *section)
+-{
+-    hwaddr start_addr = section->offset_within_address_space;
+-    ram_addr_t size = int128_get64(section->size);
+-    hwaddr end_addr = start_addr + size - 1;
+-
+-    trace_xen_map_portio_range(ioservid, start_addr, end_addr);
+-    xc_hvm_map_io_range_to_ioreq_server(xc, dom, ioservid, 0,
+-                                        start_addr, end_addr);
+-}
+-
+-static inline void xen_unmap_io_section(XenXC xc, domid_t dom,
+-                                        ioservid_t ioservid,
+-                                        MemoryRegionSection *section)
+-{
+-    hwaddr start_addr = section->offset_within_address_space;
+-    ram_addr_t size = int128_get64(section->size);
+-    hwaddr end_addr = start_addr + size - 1;
+-
+-    trace_xen_unmap_portio_range(ioservid, start_addr, end_addr);
+-    xc_hvm_unmap_io_range_from_ioreq_server(xc, dom, ioservid, 0,
+-                                            start_addr, end_addr);
+-}
+-
+-static inline void xen_map_pcidev(XenXC xc, domid_t dom,
+-                                  ioservid_t ioservid,
+-                                  PCIDevice *pci_dev)
+-{
+-    trace_xen_map_pcidev(ioservid, pci_bus_num(pci_dev->bus),
+-                         PCI_SLOT(pci_dev->devfn), PCI_FUNC(pci_dev->devfn));
+-    xc_hvm_map_pcidev_to_ioreq_server(xc, dom, ioservid,
+-                                      0, pci_bus_num(pci_dev->bus),
+-                                      PCI_SLOT(pci_dev->devfn),
+-                                      PCI_FUNC(pci_dev->devfn));
+-}
+-
+-static inline void xen_unmap_pcidev(XenXC xc, domid_t dom,
+-                                    ioservid_t ioservid,
+-                                    PCIDevice *pci_dev)
+-{
+-    trace_xen_unmap_pcidev(ioservid, pci_bus_num(pci_dev->bus),
+-                           PCI_SLOT(pci_dev->devfn), PCI_FUNC(pci_dev->devfn));
+-    xc_hvm_unmap_pcidev_from_ioreq_server(xc, dom, ioservid,
+-                                          0, pci_bus_num(pci_dev->bus),
+-                                          PCI_SLOT(pci_dev->devfn),
+-                                          PCI_FUNC(pci_dev->devfn));
+-}
+-
+-static inline int xen_create_ioreq_server(XenXC xc, domid_t dom,
+-                                          ioservid_t *ioservid)
+-{
+-    int rc = xc_hvm_create_ioreq_server(xc, dom, 1, ioservid);
+-
+-    if (rc == 0) {
+-        trace_xen_ioreq_server_create(*ioservid);
+-    }
+-
+-    return rc;
+-}
+-
+-static inline void xen_destroy_ioreq_server(XenXC xc, domid_t dom,
+-                                            ioservid_t ioservid)
+-{
+-    trace_xen_ioreq_server_destroy(ioservid);
+-    xc_hvm_destroy_ioreq_server(xc, dom, ioservid);
+-}
+-
+-static inline int xen_get_ioreq_server_info(XenXC xc, domid_t dom,
+-                                            ioservid_t ioservid,
+-                                            xen_pfn_t *ioreq_pfn,
+-                                            xen_pfn_t *bufioreq_pfn,
+-                                            evtchn_port_t *bufioreq_evtchn)
+-{
+-    return xc_hvm_get_ioreq_server_info(xc, dom, ioservid,
+-                                        ioreq_pfn, bufioreq_pfn,
+-                                        bufioreq_evtchn);
+-}
+-
+-static inline int xen_set_ioreq_server_state(XenXC xc, domid_t dom,
+-                                             ioservid_t ioservid,
+-                                             bool enable)
+-{
+-    trace_xen_ioreq_server_state(ioservid, enable);
+-    return xc_hvm_set_ioreq_server_state(xc, dom, ioservid, enable);
+-}
+-
+-#endif
+-
+ #endif /* QEMU_HW_XEN_COMMON_H */
+diff --git a/trace-events b/trace-events
+index abd1118..b5722ea 100644
+--- a/trace-events
++++ b/trace-events
+@@ -897,15 +897,6 @@ pvscsi_tx_rings_num_pages(const char* label, uint32_t num) "Number of %s pages:
+ # xen-hvm.c
+ xen_ram_alloc(unsigned long ram_addr, unsigned long size) "requested: %#lx, size %#lx"
+ xen_client_set_memory(uint64_t start_addr, unsigned long size, bool log_dirty) "%#"PRIx64" size %#lx, log_dirty %i"
+-xen_ioreq_server_create(uint32_t id) "id: %u"
+-xen_ioreq_server_destroy(uint32_t id) "id: %u"
+-xen_ioreq_server_state(uint32_t id, bool enable) "id: %u: enable: %i"
+-xen_map_mmio_range(uint32_t id, uint64_t start_addr, uint64_t end_addr) "id: %u start: %#"PRIx64" end: %#"PRIx64
+-xen_unmap_mmio_range(uint32_t id, uint64_t start_addr, uint64_t end_addr) "id: %u start: %#"PRIx64" end: %#"PRIx64
+-xen_map_portio_range(uint32_t id, uint64_t start_addr, uint64_t end_addr) "id: %u start: %#"PRIx64" end: %#"PRIx64
+-xen_unmap_portio_range(uint32_t id, uint64_t start_addr, uint64_t end_addr) "id: %u start: %#"PRIx64" end: %#"PRIx64
+-xen_map_pcidev(uint32_t id, uint8_t bus, uint8_t dev, uint8_t func) "id: %u bdf: %02x.%02x.%02x"
+-xen_unmap_pcidev(uint32_t id, uint8_t bus, uint8_t dev, uint8_t func) "id: %u bdf: %02x.%02x.%02x"
+ 
+ # xen-mapcache.c
+ xen_map_cache(uint64_t phys_addr) "want %#"PRIx64
+diff --git a/xen-hvm.c b/xen-hvm.c
+index 315864c..e2e575b 100644
+--- a/xen-hvm.c
++++ b/xen-hvm.c
+@@ -85,6 +85,9 @@ static inline ioreq_t *xen_vcpu_ioreq(shared_iopage_t *shared_page, int vcpu)
+ }
+ #  define FMT_ioreq_size "u"
+ #endif
++#ifndef HVM_PARAM_BUFIOREQ_EVTCHN
++#define HVM_PARAM_BUFIOREQ_EVTCHN 26
++#endif
+ 
+ #define BUFFER_IO_MAX_DELAY  100
+ /* Leave some slack so that hvmloader does not complain about lack of
+@@ -104,7 +107,6 @@ typedef struct XenPhysmap {
+ } XenPhysmap;
+ 
+ typedef struct XenIOState {
+-    ioservid_t ioservid;
+     shared_iopage_t *shared_page;
+     shared_vmport_iopage_t *shared_vmport_page;
+     buffered_iopage_t *buffered_io_page;
+@@ -121,8 +123,6 @@ typedef struct XenIOState {
+ 
+     struct xs_handle *xenstore;
+     MemoryListener memory_listener;
+-    MemoryListener io_listener;
+-    DeviceListener device_listener;
+     QLIST_HEAD(, XenPhysmap) physmap;
+     hwaddr free_phys_offset;
+     const XenPhysmap *log_for_dirtybit;
+@@ -491,23 +491,12 @@ static void xen_set_memory(struct MemoryListener *listener,
+     bool log_dirty = memory_region_is_logging(section->mr);
+     hvmmem_type_t mem_type;
+ 
+-    if (section->mr == &ram_memory) {
+-        return;
+-    } else {
+-        if (add) {
+-            xen_map_memory_section(xen_xc, xen_domid, state->ioservid,
+-                                   section);
+-        } else {
+-            xen_unmap_memory_section(xen_xc, xen_domid, state->ioservid,
+-                                     section);
+-        }
+-    }
+-
+     if (!memory_region_is_ram(section->mr)) {
+         return;
+     }
+ 
+-    if (log_dirty != add) {
++    if (!(section->mr != &ram_memory
++          && ( (log_dirty && add) || (!log_dirty && !add)))) {
+         return;
+     }
+ 
+@@ -550,50 +539,6 @@ static void xen_region_del(MemoryListener *listener,
+     memory_region_unref(section->mr);
+ }
+ 
+-static void xen_io_add(MemoryListener *listener,
+-                       MemoryRegionSection *section)
+-{
+-    XenIOState *state = container_of(listener, XenIOState, io_listener);
+-
+-    memory_region_ref(section->mr);
+-
+-    xen_map_io_section(xen_xc, xen_domid, state->ioservid, section);
+-}
+-
+-static void xen_io_del(MemoryListener *listener,
+-                       MemoryRegionSection *section)
+-{
+-    XenIOState *state = container_of(listener, XenIOState, io_listener);
+-
+-    xen_unmap_io_section(xen_xc, xen_domid, state->ioservid, section);
+-
+-    memory_region_unref(section->mr);
+-}
+-
+-static void xen_device_realize(DeviceListener *listener,
+-			       DeviceState *dev)
+-{
+-    XenIOState *state = container_of(listener, XenIOState, device_listener);
+-
+-    if (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
+-        PCIDevice *pci_dev = PCI_DEVICE(dev);
+-
+-        xen_map_pcidev(xen_xc, xen_domid, state->ioservid, pci_dev);
+-    }
+-}
+-
+-static void xen_device_unrealize(DeviceListener *listener,
+-				 DeviceState *dev)
+-{
+-    XenIOState *state = container_of(listener, XenIOState, device_listener);
+-
+-    if (object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
+-        PCIDevice *pci_dev = PCI_DEVICE(dev);
+-
+-        xen_unmap_pcidev(xen_xc, xen_domid, state->ioservid, pci_dev);
+-    }
+-}
+-
+ static void xen_sync_dirty_bitmap(XenIOState *state,
+                                   hwaddr start_addr,
+                                   ram_addr_t size)
+@@ -694,17 +639,6 @@ static MemoryListener xen_memory_listener = {
+     .priority = 10,
+ };
+ 
+-static MemoryListener xen_io_listener = {
+-    .region_add = xen_io_add,
+-    .region_del = xen_io_del,
+-    .priority = 10,
+-};
+-
+-static DeviceListener xen_device_listener = {
+-    .realize = xen_device_realize,
+-    .unrealize = xen_device_unrealize,
+-};
+-
+ /* get the ioreq packets from share mem */
+ static ioreq_t *cpu_get_ioreq_from_shared_memory(XenIOState *state, int vcpu)
+ {
+@@ -953,27 +887,6 @@ static void handle_ioreq(XenIOState *state, ioreq_t *req)
+         case IOREQ_TYPE_INVALIDATE:
+             xen_invalidate_map_cache();
+             break;
+-        case IOREQ_TYPE_PCI_CONFIG: {
+-            uint32_t sbdf = req->addr >> 32;
+-            uint32_t val;
+-
+-            /* Fake a write to port 0xCF8 so that
+-             * the config space access will target the
+-             * correct device model.
+-             */
+-            val = (1u << 31) |
+-                  ((req->addr & 0x0f00) << 16) |
+-                  ((sbdf & 0xffff) << 8) |
+-                  (req->addr & 0xfc);
+-            do_outp(0xcf8, 4, val);
+-
+-            /* Now issue the config space access via
+-             * port 0xCFC
+-             */
+-            req->addr = 0xcfc | (req->addr & 0x03);
+-            cpu_ioreq_pio(req);
+-            break;
+-        }
+         default:
+             hw_error("Invalid ioreq type 0x%x\n", req->type);
+     }
+@@ -1104,15 +1017,9 @@ static void xen_main_loop_prepare(XenIOState *state)
+ static void xen_hvm_change_state_handler(void *opaque, int running,
+                                          RunState rstate)
+ {
+-    XenIOState *state = opaque;
+-
+     if (running) {
+-        xen_main_loop_prepare(state);
++        xen_main_loop_prepare((XenIOState *)opaque);
+     }
+-
+-    xen_set_ioreq_server_state(xen_xc, xen_domid,
+-                               state->ioservid,
+-                               (rstate == RUN_STATE_RUNNING));
+ }
+ 
+ static void xen_exit_notifier(Notifier *n, void *data)
+@@ -1181,9 +1088,8 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+                  MemoryRegion **ram_memory)
+ {
+     int i, rc;
+-    xen_pfn_t ioreq_pfn;
+-    xen_pfn_t bufioreq_pfn;
+-    evtchn_port_t bufioreq_evtchn;
++    unsigned long ioreq_pfn;
++    unsigned long bufioreq_evtchn;
+     XenIOState *state;
+ 
+     state = g_malloc0(sizeof (XenIOState));
+@@ -1200,12 +1106,6 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+         return -1;
+     }
+ 
+-    rc = xen_create_ioreq_server(xen_xc, xen_domid, &state->ioservid);
+-    if (rc < 0) {
+-        perror("xen: ioreq server create");
+-        return -1;
+-    }
+-
+     state->exit.notify = xen_exit_notifier;
+     qemu_add_exit_notifier(&state->exit);
+ 
+@@ -1215,18 +1115,8 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+     state->wakeup.notify = xen_wakeup_notifier;
+     qemu_register_wakeup_notifier(&state->wakeup);
+ 
+-    rc = xen_get_ioreq_server_info(xen_xc, xen_domid, state->ioservid,
+-                                   &ioreq_pfn, &bufioreq_pfn,
+-                                   &bufioreq_evtchn);
+-    if (rc < 0) {
+-        hw_error("failed to get ioreq server info: error %d handle=" XC_INTERFACE_FMT,
+-                 errno, xen_xc);
+-    }
+-
++    xc_get_hvm_param(xen_xc, xen_domid, HVM_PARAM_IOREQ_PFN, &ioreq_pfn);
+     DPRINTF("shared page at pfn %lx\n", ioreq_pfn);
+-    DPRINTF("buffered io page at pfn %lx\n", bufioreq_pfn);
+-    DPRINTF("buffered io evtchn is %x\n", bufioreq_evtchn);
+-
+     state->shared_page = xc_map_foreign_range(xen_xc, xen_domid, XC_PAGE_SIZE,
+                                               PROT_READ|PROT_WRITE, ioreq_pfn);
+     if (state->shared_page == NULL) {
+@@ -1248,10 +1138,10 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+         hw_error("get vmport regs pfn returned error %d, rc=%d", errno, rc);
+     }
+ 
+-    state->buffered_io_page = xc_map_foreign_range(xen_xc, xen_domid,
+-                                                   XC_PAGE_SIZE,
+-                                                   PROT_READ|PROT_WRITE,
+-                                                   bufioreq_pfn);
++    xc_get_hvm_param(xen_xc, xen_domid, HVM_PARAM_BUFIOREQ_PFN, &ioreq_pfn);
++    DPRINTF("buffered io page at pfn %lx\n", ioreq_pfn);
++    state->buffered_io_page = xc_map_foreign_range(xen_xc, xen_domid, XC_PAGE_SIZE,
++                                                   PROT_READ|PROT_WRITE, ioreq_pfn);
+     if (state->buffered_io_page == NULL) {
+         hw_error("map buffered IO page returned error %d", errno);
+     }
+@@ -1259,12 +1149,6 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+     /* Note: cpus is empty at this point in init */
+     state->cpu_by_vcpu_id = g_malloc0(max_cpus * sizeof(CPUState *));
+ 
+-    rc = xen_set_ioreq_server_state(xen_xc, xen_domid, state->ioservid, true);
+-    if (rc < 0) {
+-        hw_error("failed to enable ioreq server info: error %d handle=" XC_INTERFACE_FMT,
+-                 errno, xen_xc);
+-    }
+-
+     state->ioreq_local_port = g_malloc0(max_cpus * sizeof (evtchn_port_t));
+ 
+     /* FIXME: how about if we overflow the page here? */
+@@ -1272,16 +1156,22 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+         rc = xc_evtchn_bind_interdomain(state->xce_handle, xen_domid,
+                                         xen_vcpu_eport(state->shared_page, i));
+         if (rc == -1) {
+-            fprintf(stderr, "shared evtchn %d bind error %d\n", i, errno);
++            fprintf(stderr, "bind interdomain ioctl error %d\n", errno);
+             return -1;
+         }
+         state->ioreq_local_port[i] = rc;
+     }
+ 
++    rc = xc_get_hvm_param(xen_xc, xen_domid, HVM_PARAM_BUFIOREQ_EVTCHN,
++            &bufioreq_evtchn);
++    if (rc < 0) {
++        fprintf(stderr, "failed to get HVM_PARAM_BUFIOREQ_EVTCHN\n");
++        return -1;
++    }
+     rc = xc_evtchn_bind_interdomain(state->xce_handle, xen_domid,
+-                                    bufioreq_evtchn);
++            (uint32_t)bufioreq_evtchn);
+     if (rc == -1) {
+-        fprintf(stderr, "buffered evtchn bind error %d\n", errno);
++        fprintf(stderr, "bind interdomain ioctl error %d\n", errno);
+         return -1;
+     }
+     state->bufioreq_local_port = rc;
+@@ -1297,12 +1187,6 @@ int xen_hvm_init(ram_addr_t *below_4g_mem_size, ram_addr_t *above_4g_mem_size,
+     memory_listener_register(&state->memory_listener, &address_space_memory);
+     state->log_for_dirtybit = NULL;
+ 
+-    state->io_listener = xen_io_listener;
+-    memory_listener_register(&state->io_listener, &address_space_io);
+-
+-    state->device_listener = xen_device_listener;
+-    device_listener_register(&state->device_listener);
+-
+     /* Initialize backend core & drivers */
+     if (xen_be_init() != 0) {
+         fprintf(stderr, "%s: xen backend core setup failed\n", __FUNCTION__);
+-- 
+1.7.1
+

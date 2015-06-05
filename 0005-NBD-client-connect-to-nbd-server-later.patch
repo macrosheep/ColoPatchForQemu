@@ -1,0 +1,222 @@
+From 692546b5734018efc3fa975b760c992565fbcfce Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Wed, 18 Mar 2015 14:36:40 +0800
+Subject: [PATCH 05/18] NBD client: connect to nbd server later
+
+The secondary qemu starts later than the primary qemu, so we
+cannot connect to nbd server in bdrv_open().
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+Signed-off-by: zhanghailiang <zhang.zhanghailiang@huawei.com>
+Signed-off-by: Gonglei <arei.gonglei@huawei.com>
+---
+ block/nbd.c |  108 +++++++++++++++++++++++++++++++++++++++++++++++++++-------
+ 1 files changed, 95 insertions(+), 13 deletions(-)
+
+diff --git a/block/nbd.c b/block/nbd.c
+index 04cc845..7717894 100644
+--- a/block/nbd.c
++++ b/block/nbd.c
+@@ -44,6 +44,8 @@
+ typedef struct BDRVNBDState {
+     NbdClientSession client;
+     QemuOpts *socket_opts;
++    char *export;
++    bool connected;
+ } BDRVNBDState;
+ 
+ static int nbd_parse_uri(const char *filename, QDict *options)
+@@ -247,20 +249,10 @@ static int nbd_establish_connection(BlockDriverState *bs, Error **errp)
+     return sock;
+ }
+ 
+-static int nbd_open(BlockDriverState *bs, QDict *options, int flags,
+-                    Error **errp)
++static int nbd_connect_server(BlockDriverState *bs, Error **errp)
+ {
+     BDRVNBDState *s = bs->opaque;
+-    char *export = NULL;
+     int result, sock;
+-    Error *local_err = NULL;
+-
+-    /* Pop the config into our state object. Exit if invalid. */
+-    nbd_config(s, options, &export, &local_err);
+-    if (local_err) {
+-        error_propagate(errp, local_err);
+-        return -EINVAL;
+-    }
+ 
+     /* establish TCP connection, return error if it fails
+      * TODO: Configurable retry-until-timeout behaviour.
+@@ -271,16 +263,57 @@ static int nbd_open(BlockDriverState *bs, QDict *options, int flags,
+     }
+ 
+     /* NBD handshake */
+-    result = nbd_client_session_init(&s->client, bs, sock, export);
+-    g_free(export);
++    result = nbd_client_session_init(&s->client, bs, sock, s->export);
++    g_free(s->export);
++    s->export = NULL;
++    if (!result) {
++        s->connected = true;
++    }
++
+     return result;
+ }
+ 
++static int nbd_open(BlockDriverState *bs, QDict *options, int flags,
++                    Error **errp)
++{
++    BDRVNBDState *s = bs->opaque;
++    Error *local_err = NULL;
++
++    /* Pop the config into our state object. Exit if invalid. */
++    nbd_config(s, options, &s->export, &local_err);
++    if (local_err) {
++        error_propagate(errp, local_err);
++        return -EINVAL;
++    }
++
++    return nbd_connect_server(bs, errp);
++}
++
++static int nbd_open_colo(BlockDriverState *bs, QDict *options, int flags,
++                         Error **errp)
++{
++    BDRVNBDState *s = bs->opaque;
++    Error *local_err = NULL;
++
++    /* Pop the config into our state object. Exit if invalid. */
++    nbd_config(s, options, &s->export, &local_err);
++    if (local_err) {
++        error_propagate(errp, local_err);
++        return -EINVAL;
++    }
++
++    return 0;
++}
++
+ static int nbd_co_readv(BlockDriverState *bs, int64_t sector_num,
+                         int nb_sectors, QEMUIOVector *qiov)
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        return -EIO;
++    }
++
+     return nbd_client_session_co_readv(&s->client, sector_num,
+                                        nb_sectors, qiov);
+ }
+@@ -290,6 +323,10 @@ static int nbd_co_writev(BlockDriverState *bs, int64_t sector_num,
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        return -EIO;
++    }
++
+     return nbd_client_session_co_writev(&s->client, sector_num,
+                                         nb_sectors, qiov);
+ }
+@@ -298,6 +335,10 @@ static int nbd_co_flush(BlockDriverState *bs)
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        return -EIO;
++    }
++
+     return nbd_client_session_co_flush(&s->client);
+ }
+ 
+@@ -306,6 +347,10 @@ static int nbd_co_discard(BlockDriverState *bs, int64_t sector_num,
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        return -EIO;
++    }
++
+     return nbd_client_session_co_discard(&s->client, sector_num,
+                                          nb_sectors);
+ }
+@@ -316,12 +361,21 @@ static void nbd_close(BlockDriverState *bs)
+ 
+     qemu_opts_del(s->socket_opts);
+     nbd_client_session_close(&s->client);
++    s->connected = false;
+ }
+ 
+ static int64_t nbd_getlength(BlockDriverState *bs)
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        /*
++         * We cannot return -ENOTCONN, otherwise refresh_total_sectors()
++         * will fail, and we cannot open nbd client.
++         */
++        return 0;
++    }
++
+     return s->client.size;
+ }
+ 
+@@ -329,6 +383,10 @@ static void nbd_detach_aio_context(BlockDriverState *bs)
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        return;
++    }
++
+     nbd_client_session_detach_aio_context(&s->client);
+ }
+ 
+@@ -337,6 +395,10 @@ static void nbd_attach_aio_context(BlockDriverState *bs,
+ {
+     BDRVNBDState *s = bs->opaque;
+ 
++    if (!s->connected) {
++        return;
++    }
++
+     nbd_client_session_attach_aio_context(&s->client, new_context);
+ }
+ 
+@@ -436,11 +498,31 @@ static BlockDriver bdrv_nbd_unix = {
+     .bdrv_refresh_filename      = nbd_refresh_filename,
+ };
+ 
++static BlockDriver bdrv_nbd_colo = {
++    .format_name                = "nbd+colo",
++    .protocol_name              = "nbd+colo",
++    .instance_size              = sizeof(BDRVNBDState),
++    .bdrv_parse_filename        = nbd_parse_filename,
++    .bdrv_file_open             = nbd_open_colo,
++    .bdrv_co_readv              = nbd_co_readv,
++    .bdrv_co_writev             = nbd_co_writev,
++    .bdrv_close                 = nbd_close,
++    .bdrv_co_flush_to_os        = nbd_co_flush,
++    .bdrv_co_discard            = nbd_co_discard,
++    .bdrv_getlength             = nbd_getlength,
++    .bdrv_detach_aio_context    = nbd_detach_aio_context,
++    .bdrv_attach_aio_context    = nbd_attach_aio_context,
++    .bdrv_refresh_filename      = nbd_refresh_filename,
++
++    .has_variable_length        = true,
++};
++
+ static void bdrv_nbd_init(void)
+ {
+     bdrv_register(&bdrv_nbd);
+     bdrv_register(&bdrv_nbd_tcp);
+     bdrv_register(&bdrv_nbd_unix);
++    bdrv_register(&bdrv_nbd_colo);
+ }
+ 
+ block_init(bdrv_nbd_init);
+-- 
+1.7.1
+

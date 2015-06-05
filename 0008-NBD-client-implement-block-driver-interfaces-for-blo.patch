@@ -1,0 +1,82 @@
+From d0a212b779e865d7b93300de68224dd095422f18 Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Wed, 25 Feb 2015 15:06:08 +0800
+Subject: [PATCH 08/18] NBD client: implement block driver interfaces for block replication
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+Signed-off-by: zhanghailiang <zhang.zhanghailiang@huawei.com>
+Signed-off-by: Gonglei <arei.gonglei@huawei.com>
+---
+ block/nbd.c |   49 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 files changed, 49 insertions(+), 0 deletions(-)
+
+diff --git a/block/nbd.c b/block/nbd.c
+index 7717894..d422853 100644
+--- a/block/nbd.c
++++ b/block/nbd.c
+@@ -447,6 +447,52 @@ static void nbd_refresh_filename(BlockDriverState *bs)
+     bs->full_open_options = opts;
+ }
+ 
++static void nbd_start_replication(BlockDriverState *bs, COLOMode mode,
++                                  Error **errp)
++{
++    BDRVNBDState *s = bs->opaque;
++
++    /*
++     * TODO: support COLO_SECONDARY_MODE if we allow secondary
++     * QEMU becoming primary QEMU.
++     */
++    if (mode != COLO_MODE_PRIMARY) {
++        error_set(errp, QERR_INVALID_PARAMETER, "mode");
++        return;
++    }
++
++    if (s->connected) {
++        error_setg(errp, "The connection is established");
++        return;
++    }
++
++    /* TODO: NBD client should be one child of quorum, how to verify it? */
++    nbd_connect_server(bs, errp);
++}
++
++static void nbd_do_checkpoint(BlockDriverState *bs, Error **errp)
++{
++    BDRVNBDState *s = bs->opaque;
++
++    if (!s->connected) {
++        error_setg(errp, "The connection is not established");
++        return;
++    }
++}
++
++static void nbd_stop_replication(BlockDriverState *bs, Error **errp)
++{
++    BDRVNBDState *s = bs->opaque;
++
++    if (!s->connected) {
++        error_setg(errp, "The connection is not established");
++        return;
++    }
++
++    nbd_client_session_close(&s->client);
++    s->connected = false;
++}
++
+ static BlockDriver bdrv_nbd = {
+     .format_name                = "nbd",
+     .protocol_name              = "nbd",
+@@ -513,6 +559,9 @@ static BlockDriver bdrv_nbd_colo = {
+     .bdrv_detach_aio_context    = nbd_detach_aio_context,
+     .bdrv_attach_aio_context    = nbd_attach_aio_context,
+     .bdrv_refresh_filename      = nbd_refresh_filename,
++    .bdrv_start_replication     = nbd_start_replication,
++    .bdrv_do_checkpoint         = nbd_do_checkpoint,
++    .bdrv_stop_replication      = nbd_stop_replication,
+ 
+     .has_variable_length        = true,
+ };
+-- 
+1.7.1
+

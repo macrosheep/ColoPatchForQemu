@@ -1,0 +1,44 @@
+From ad8b1fdf0213782d288599d64cfdcbc5572a14e3 Mon Sep 17 00:00:00 2001
+From: Wen Congyang <wency@cn.fujitsu.com>
+Date: Fri, 30 Jan 2015 15:38:48 +0800
+Subject: [PATCH 02/18] quorum: don't share qiov
+
+If the child touches qiov->iov, it will cause unexpected results.
+
+Signed-off-by: Wen Congyang <wency@cn.fujitsu.com>
+---
+ block/quorum.c |   10 +++++++++-
+ 1 files changed, 9 insertions(+), 1 deletions(-)
+
+diff --git a/block/quorum.c b/block/quorum.c
+index 437b122..b5075d5 100644
+--- a/block/quorum.c
++++ b/block/quorum.c
+@@ -165,6 +165,10 @@ static void quorum_aio_finalize(QuorumAIOCB *acb)
+             qemu_vfree(acb->qcrs[i].buf);
+             qemu_iovec_destroy(&acb->qcrs[i].qiov);
+         }
++    } else {
++        for (i = 0; i <= acb->child_iter; i++) {
++            qemu_iovec_destroy(&acb->qcrs[i].qiov);
++        }
+     }
+ 
+     g_free(acb->qcrs);
+@@ -708,8 +712,12 @@ static BlockAIOCB *quorum_aio_writev(BlockDriverState *bs,
+                                       cb, opaque);
+     int i;
+ 
++    acb->child_iter = s->num_children - 1;
+     for (i = 0; i < s->num_children; i++) {
+-        acb->qcrs[i].aiocb = bdrv_aio_writev(s->bs[i], sector_num, qiov,
++        qemu_iovec_init(&acb->qcrs[i].qiov, acb->qiov->niov);
++        qemu_iovec_concat(&acb->qcrs[i].qiov, acb->qiov, 0, acb->qiov->size);
++        acb->qcrs[i].aiocb = bdrv_aio_writev(s->bs[i], sector_num,
++                                             &acb->qcrs[i].qiov,
+                                              nb_sectors, &quorum_aio_cb,
+                                              &acb->qcrs[i]);
+     }
+-- 
+1.7.1
+
